@@ -1,111 +1,167 @@
 """
 TechTalk AI - Backend
-FastAPI server con integración a Groq API
+FastAPI + Groq API for AI-powered interview practice
 """
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import os
 from groq import Groq
+import os
 import random
+import json
 
-app = FastAPI(title="TechTalk AI API")
+app = FastAPI(title="TechTalk AI")
 
-# CORS
+# CORS para permitir llamadas desde el frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # En producción, especifica tu dominio
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Cliente Groq
-groq_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
-class InterviewRequest(BaseModel):
-    question_type: str
-
+# Modelos de datos
 class FeedbackRequest(BaseModel):
-    question: str
     user_response: str
-    question_type: str
+    question_type: str = "behavioral"
 
-# Banco de preguntas
+class FeedbackResponse(BaseModel):
+    feedback: str
+    clarity_score: int
+    strengths: list[str]
+    improvements: list[str]
+
+# Banco de preguntas por categoría
 QUESTIONS = {
     "behavioral": [
-        "Cuéntame sobre un proyecto difícil en el que trabajaste y cómo lo resolviste.",
-        "Describe una situación donde tuviste que aprender una tecnología nueva rápidamente.",
-        "¿Cuál ha sido tu mayor desafío técnico y cómo lo superaste?",
+        "Cuéntame sobre un proyecto técnico del que estés orgulloso/a.",
+        "Describe una vez que tuviste que aprender una nueva tecnología rápidamente.",
+        "Háblame de un bug difícil que hayas resuelto.",
+        "Cuéntame sobre una vez que tuviste que trabajar con un deadline ajustado.",
+        "Describe una situación donde tuviste que colaborar con un equipo difícil.",
     ],
     "coding": [
-        "Explícame cómo implementarías una función para encontrar duplicados en una lista.",
-        "Describe tu enfoque para optimizar una consulta SQL lenta.",
-        "Explica cómo harías un merge entre dos listas ordenadas.",
+        "Explícame cómo resolverías el problema de encontrar duplicados en un array.",
+        "¿Cómo implementarías una función para validar si una cadena es un palíndromo?",
+        "Explica tu approach para diseñar una función de búsqueda binaria.",
+        "¿Cómo optimizarías una query SQL que está tardando mucho?",
+        "Explica cómo implementarías un cache simple.",
     ],
     "system_design": [
-        "Diseña un sistema de URL shortener como bit.ly.",
-        "¿Cómo diseñarías un pipeline de datos para procesar millones de registros diarios?",
-        "Explica cómo arquitecturarías un sistema de notificaciones en tiempo real.",
+        "¿Cómo diseñarías un sistema de autenticación de usuarios?",
+        "Explica cómo diseñarías una API REST para un blog.",
+        "¿Cómo estructurarías una base de datos para un sistema de e-commerce?",
+        "Diseña un sistema simple de notificaciones.",
+        "¿Cómo manejarías el escalamiento de una aplicación web?",
     ]
 }
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "TechTalk AI API"}
+    """Health check"""
+    return {"status": "ok", "message": "TechTalk AI Backend is running"}
 
-@app.post("/api/get-question")
-async def get_question(request: InterviewRequest):
+@app.get("/api/question/{question_type}")
+async def get_question(question_type: str):
+    """
+    Obtiene una pregunta random según el tipo
+    """
+    if question_type not in QUESTIONS:
+        raise HTTPException(status_code=400, detail="Invalid question type")
+    
+    question = random.choice(QUESTIONS[question_type])
+    return {"question": question, "type": question_type}
+
+@app.post("/api/feedback", response_model=FeedbackResponse)
+async def generate_feedback(request: FeedbackRequest):
+    """
+    Genera feedback sobre la respuesta del usuario usando Groq
+    """
     try:
-        question_type = request.question_type
-        if question_type not in QUESTIONS:
-            raise HTTPException(status_code=400, detail="Invalid type")
-        
-        question = random.choice(QUESTIONS[question_type])
-        return {"question": question, "type": question_type}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Prompt para Groq
+        prompt = f"""Eres un experto en entrevistas técnicas. 
 
-@app.post("/api/get-feedback")
-async def get_feedback(request: FeedbackRequest):
-    try:
-        system_prompt = f"""Eres un entrevistador técnico. Evalúa esta respuesta:
+Un candidato respondió a una pregunta de tipo {request.question_type} con la siguiente respuesta:
 
-Pregunta: {request.question}
-Respuesta: {request.user_response}
+"{request.user_response}"
 
-Proporciona feedback en este formato:
+Analiza la respuesta y proporciona feedback constructivo en formato JSON con esta estructura exacta:
 
-CLARIDAD: [1-5]
+{{
+  "clarity_score": [número del 1-5, donde 5 es excelente],
+  "strengths": ["punto fuerte 1", "punto fuerte 2"],
+  "improvements": ["área a mejorar 1", "área a mejorar 2", "área a mejorar 3"],
+  "feedback": "Un párrafo breve (2-3 oraciones) con feedback general"
+}}
 
-FORTALEZAS:
-- [punto 1]
-- [punto 2]
+Sé constructivo, específico y amable. El candidato está practicando y aprendiendo.
+Responde SOLO con el JSON, sin texto adicional."""
 
-MEJORAS:
-- [punto 1]
-- [punto 2]
-
-Sé específico y constructivo."""
-
-        chat_completion = groq_client.chat.completions.create(
-            messages=[{"role": "system", "content": system_prompt}],
-            model="llama-3.3-70b-versatile",
+        # Llamada a Groq
+        chat_completion = client.chat.completions.create(
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Eres un experto en entrevistas técnicas que da feedback constructivo y específico."
+                },
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            model="llama-3.3-70b-versatile",  # Modelo rápido y gratis de Groq
             temperature=0.7,
-            max_tokens=400,
+            max_tokens=1000,
+        )
+
+        # Extraer respuesta
+        response_text = chat_completion.choices[0].message.content
+        
+        # Parsear JSON (Groq debería devolver JSON limpio)
+        feedback_data = json.loads(response_text)
+        
+        return FeedbackResponse(
+            feedback=feedback_data.get("feedback", ""),
+            clarity_score=feedback_data.get("clarity_score", 3),
+            strengths=feedback_data.get("strengths", []),
+            improvements=feedback_data.get("improvements", [])
         )
         
-        feedback_text = chat_completion.choices[0].message.content
-        
-        return {
-            "clarity_score": 4,
-            "feedback": feedback_text
-        }
+    except json.JSONDecodeError:
+        # Fallback si Groq no devuelve JSON válido
+        return FeedbackResponse(
+            feedback="Gracias por tu respuesta. Intenta ser más específico y dar ejemplos concretos.",
+            clarity_score=3,
+            strengths=["Respondiste la pregunta", "Mostraste interés"],
+            improvements=[
+                "Agrega más detalles específicos",
+                "Menciona métricas o resultados concretos",
+                "Estructura tu respuesta con inicio, desarrollo y conclusión"
+            ]
+        )
+    
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error generating feedback: {str(e)}"
+        )
+
+@app.get("/api/stats")
+async def get_stats():
+    """
+    Estadísticas simples (para futuro)
+    """
+    return {
+        "total_questions": sum(len(q) for q in QUESTIONS.values()),
+        "question_types": list(QUESTIONS.keys())
+    }
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
